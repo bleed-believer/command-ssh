@@ -64,10 +64,27 @@ export class SpawnSSH {
         ];
     }
 
+    /**
+     * With no explicit `env` we must start from our own, or `ssh` ends up
+     * without `HOME` (known_hosts) nor `PATH`.
+     *
+     * Whatever the source, any inherited `SSH_ASKPASS` is dropped: the helper
+     * belongs to this class, so the caller's environment must never decide who
+     * gets asked for a credential. The password path overwrites both variables
+     * with its own helper anyway, and the passwordless one is left with no
+     * helper at all instead of whatever the parent happened to export.
+     */
+    #envOf(): NodeJS.ProcessEnv {
+        const env = { ...this.#options.env ?? process.env };
+
+        delete env.SSH_ASKPASS_REQUIRE;
+        delete env.SSH_ASKPASS;
+
+        return env;
+    }
+
     async spawn(program: string, args?: string[]): Promise<ChildProcessWithoutNullStreams> {
-        // With no explicit `env` we must start from our own, or `ssh` ends up
-        // without `HOME` (known_hosts) nor `PATH`.
-        const env = this.#options.env ?? process.env;
+        const env = this.#envOf();
         const argv = this.#argvOf(program, args);
 
         const { password } = this.#options;

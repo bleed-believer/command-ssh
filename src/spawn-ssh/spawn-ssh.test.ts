@@ -312,6 +312,57 @@ describe('SpawnSSH', () => {
         t.assert.deepStrictEqual(fake.envs[0]?.PATH, process.env.PATH);
         t.assert.deepStrictEqual(fake.envs[0]?.HOME, process.env.HOME);
         t.assert.deepStrictEqual(fake.envs[0]?.SSH_ASKPASS, undefined);
+        t.assert.deepStrictEqual(fake.envs[0]?.SSH_ASKPASS_REQUIRE, undefined);
+    });
+
+    it('Drop an askpass helper inherited from the parent environment', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                env: {
+                    PATH: '/usr/bin',
+                    SSH_ASKPASS: '/usr/lib/ssh/somebody-elses-askpass',
+                    SSH_ASKPASS_REQUIRE: 'force'
+                }
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        // Whoever spawned us may already export an askpass helper. With no
+        // password there is nothing to answer with, so ssh must not be pointed
+        // at a stranger's helper: the variables are dropped, not forwarded.
+        t.assert.deepStrictEqual(fake.envs[0]?.PATH, '/usr/bin');
+        t.assert.deepStrictEqual(fake.envs[0]?.SSH_ASKPASS, undefined);
+        t.assert.deepStrictEqual(fake.envs[0]?.SSH_ASKPASS_REQUIRE, undefined);
+    });
+
+    it('Replace an inherited askpass helper with its own', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password',
+                env: {
+                    PATH: '/usr/bin',
+                    SSH_ASKPASS: '/usr/lib/ssh/somebody-elses-askpass',
+                    SSH_ASKPASS_REQUIRE: 'never'
+                }
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        // The inherited `never` would have silenced our own helper, so nothing
+        // of the parent's askpass setup may survive the merge.
+        t.assert.deepStrictEqual(fake.envs[0]?.PATH, '/usr/bin');
+        t.assert.deepStrictEqual(fake.envs[0]?.SSH_ASKPASS, '/tmp/fake/askpass.sh');
+        t.assert.deepStrictEqual(fake.envs[0]?.SSH_ASKPASS_REQUIRE, 'force');
     });
 
     it('Inherit the parent environment when none is given', async (t: it.TestContext) => {
