@@ -1,0 +1,458 @@
+import { describe, it } from 'node:test';
+
+import { SpawnSSHFake } from './spawn-ssh.fake.js';
+import { SpawnSSH } from './spawn-ssh.js';
+
+describe('SpawnSSH', () => {
+    it('Build a non-interactive argv', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        t.assert.deepStrictEqual(fake.calls.length, 1);
+        t.assert.deepStrictEqual(fake.calls[0], {
+            program: 'ssh',
+            args: [
+                '-o', 'BatchMode=yes',
+                '-o', 'StrictHostKeyChecking=accept-new',
+                '-o', 'ConnectTimeout=10',
+                '-n',
+                'yaniko@www.yani-neko.moe',
+                'ls -lua'
+            ]
+        });
+    });
+
+    it('Assemble the remote command with every argument', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('echo', [ 'perreo', 'ijoeputa' ]);
+
+        t.assert.deepStrictEqual(fake.calls[0]?.args.at(-1), 'echo perreo ijoeputa');
+    });
+
+    it('Assemble a remote command with no arguments at all', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('uptime');
+
+        t.assert.deepStrictEqual(fake.calls[0]?.args.at(-1), 'uptime');
+    });
+
+    it('Hand back the very same child the spawn created', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko'
+            },
+            fake
+        );
+
+        const child = await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        t.assert.deepStrictEqual(fake.children.length, 1);
+        t.assert.deepStrictEqual(child as unknown, fake.children[0]);
+    });
+
+    it('Pipe every stream of the child process', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        // Without `pipe` the consumer would have no stdout/stderr to read.
+        t.assert.deepStrictEqual(fake.options[0]?.stdio, 'pipe');
+    });
+
+    it('Forward the cwd and the environment to the child process', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                cwd: '/home/yaniko',
+                env: { LANG: 'es_CL.UTF-8' }
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        t.assert.deepStrictEqual(fake.options[0]?.cwd, '/home/yaniko');
+        t.assert.deepStrictEqual(fake.envs[0], { LANG: 'es_CL.UTF-8' });
+    });
+
+    it('Stream what the child writes to the consumer', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko'
+            },
+            fake
+        );
+
+        const child = await spawnSSH.spawn('ls', [ '-lua' ]);
+        const stdout: Buffer[] = [];
+        const stderr: Buffer[] = [];
+        child.stdout.on('data', (c: Buffer) => stdout.push(c));
+        child.stderr.on('data', (c: Buffer) => stderr.push(c));
+
+        fake.emitStdout('perreo ');
+        fake.emitStdout('ijoeputa\n');
+        fake.emitStderr('algo salio mal\n');
+
+        t.assert.deepStrictEqual(
+            Buffer.concat(stdout).toString('utf-8'),
+            'perreo ijoeputa\n'
+        );
+        t.assert.deepStrictEqual(
+            Buffer.concat(stderr).toString('utf-8'),
+            'algo salio mal\n'
+        );
+    });
+
+    it('Forward to the consumer an error of the spawn itself', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko'
+            },
+            fake
+        );
+
+        const child = await spawnSSH.spawn('ls', [ '-lua' ]);
+        const errors: Error[] = [];
+        child.on('error', err => errors.push(err));
+
+        fake.emitError(new Error('spawn ssh ENOENT'));
+
+        t.assert.deepStrictEqual(errors.length, 1);
+        t.assert.match(errors[0]?.message ?? '', /ENOENT/);
+    });
+
+    it('Build an argv that lets ssh reach the askpass helper', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password',
+                legacyAlgorithms: true
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        t.assert.deepStrictEqual(fake.calls[0], {
+            program: 'ssh',
+            args: [
+                '-o', 'BatchMode=no',
+                '-o', 'StrictHostKeyChecking=accept-new',
+                '-o', 'ConnectTimeout=10',
+                '-o', 'NumberOfPasswordPrompts=1',
+                '-o', 'PubkeyAuthentication=no',
+                '-o', 'PreferredAuthentications=password,keyboard-interactive',
+                '-o', 'HostKeyAlgorithms=+ssh-rsa',
+                '-o', 'PubkeyAcceptedAlgorithms=+ssh-rsa',
+                '-n',
+                'yaniko@www.yani-neko.moe',
+                'ls -lua'
+            ]
+        });
+    });
+
+    it('Drop the legacy algorithms when they are disabled', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password',
+                legacyAlgorithms: false
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        t.assert.deepStrictEqual(
+            fake.calls[0]?.args.filter(x => x.includes('ssh-rsa')),
+            []
+        );
+    });
+
+    it('Leave out the legacy algorithms by default', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        // They are opt-in: nothing gets negotiated down unless it is asked for.
+        t.assert.deepStrictEqual(
+            fake.calls[0]?.args.filter(x => x.includes('ssh-rsa')),
+            []
+        );
+    });
+
+    it('Never leak the password into the argv nor the environment', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        t.assert.deepStrictEqual(
+            fake.calls[0]?.args.filter(x => x.includes('not-a-real-password')),
+            []
+        );
+        t.assert.deepStrictEqual(
+            Object.values(fake.envs[0] ?? {}).filter(x => x?.includes('not-a-real-password')),
+            []
+        );
+    });
+
+    it('Hand the password to the askpass provider instead', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        t.assert.deepStrictEqual(fake.passwords, [ 'not-a-real-password' ]);
+        t.assert.deepStrictEqual(fake.envs[0]?.SSH_ASKPASS, '/tmp/fake/askpass.sh');
+        t.assert.deepStrictEqual(fake.envs[0]?.SSH_ASKPASS_REQUIRE, 'force');
+    });
+
+    it('Merge the askpass environment with the given one', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password',
+                env: { LANG: 'es_CL.UTF-8' }
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        t.assert.deepStrictEqual(fake.envs[0], {
+            LANG: 'es_CL.UTF-8',
+            SSH_ASKPASS_REQUIRE: 'force',
+            SSH_ASKPASS: '/tmp/fake/askpass.sh',
+            DISPLAY: ':0'
+        });
+    });
+
+    it('Inherit the parent environment with no password either', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        // Both paths hand ssh the same environment: the only difference is the
+        // askpass helper merged on top of it.
+        t.assert.deepStrictEqual(fake.envs[0]?.PATH, process.env.PATH);
+        t.assert.deepStrictEqual(fake.envs[0]?.HOME, process.env.HOME);
+        t.assert.deepStrictEqual(fake.envs[0]?.SSH_ASKPASS, undefined);
+    });
+
+    it('Inherit the parent environment when none is given', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        // With no PATH nor HOME, ssh cannot even find its own known_hosts.
+        t.assert.deepStrictEqual(fake.envs[0]?.PATH, process.env.PATH);
+        t.assert.deepStrictEqual(fake.envs[0]?.HOME, process.env.HOME);
+    });
+
+    it('Never set up an askpass helper when there is no password', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko'
+            },
+            fake
+        );
+
+        const child = await spawnSSH.spawn('ls', [ '-lua' ]);
+        fake.emitClose(0);
+
+        t.assert.deepStrictEqual(fake.askPassOpened, 0);
+        t.assert.deepStrictEqual(fake.askPassClosed, 0);
+        t.assert.deepStrictEqual(fake.passwords, []);
+        t.assert.deepStrictEqual(child as unknown, fake.children[0]);
+    });
+
+    it('Keep the askpass helper alive while the child is running', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+        fake.emitStdout('total 0\n');
+
+        // The helper answers the prompt of a process that is still alive.
+        t.assert.deepStrictEqual(fake.askPassOpened, 1);
+        t.assert.deepStrictEqual(fake.askPassClosed, 0);
+    });
+
+    it('Tear down the askpass helper once the child closes', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+        fake.emitClose(0);
+
+        t.assert.deepStrictEqual(fake.askPassClosed, 1);
+    });
+
+    it('Deliver the close event to the consumer as well', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        const child = await spawnSSH.spawn('ls', [ '-lua' ]);
+        const codes: (number | null)[] = [];
+        child.on('close', code => codes.push(code));
+
+        // The class clears its own listeners while handling this very event,
+        // so the consumer must still be notified.
+        fake.emitClose(255);
+
+        t.assert.deepStrictEqual(codes, [ 255 ]);
+        t.assert.deepStrictEqual(fake.askPassClosed, 1);
+    });
+
+    it('Create one askpass helper per spawned process', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+        await spawnSSH.spawn('uptime');
+
+        t.assert.deepStrictEqual(fake.askPassOpened, 2);
+        t.assert.deepStrictEqual(fake.passwords, [ 'not-a-real-password', 'not-a-real-password' ]);
+
+        // Closing one process leaves the other one untouched.
+        fake.emitClose(0, 0);
+        t.assert.deepStrictEqual(fake.askPassClosed, 1);
+
+        fake.emitClose(0, 1);
+        t.assert.deepStrictEqual(fake.askPassClosed, 2);
+    });
+
+    it('Reject without spawning when the askpass helper fails to open', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        fake.failOnOpen(new Error('EADDRINUSE'));
+        await t.assert.rejects(
+            () => spawnSSH.spawn('ls', [ '-lua' ]),
+            /EADDRINUSE/
+        );
+
+        t.assert.deepStrictEqual(fake.calls, []);
+        t.assert.deepStrictEqual(fake.children.length, 0);
+    });
+});
