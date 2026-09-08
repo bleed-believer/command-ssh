@@ -103,6 +103,33 @@ describe('ExecuteSSH', () => {
         );
     });
 
+    it('Reject when the spawn itself never hands back a child', async (t: it.TestContext) => {
+        const fake = new ExecuteSSHFake();
+        const executor = new ExecuteSSH(
+            { hostname: 'localhost', username: 'test-user' },
+            fake
+        );
+
+        const expectedError = new Error('The askpass helper failed to open');
+        fake.failSpawn(expectedError);
+
+        // It must settle, and settle as a rejection: an `async` executor would
+        // leave this pending forever and leak the rejection to the host process.
+        await t.assert.rejects(
+            Promise.race([
+                executor.execute('ls'),
+                new Promise((_, reject) => setTimeout(
+                    () => reject(new Error('execute() never settled')),
+                    1000
+                ))
+            ]),
+            (err: any) => {
+                t.assert.deepStrictEqual(err, expectedError);
+                return true;
+            }
+        );
+    });
+
     it('Handle close with non-zero exit code and omit stdout/stderr if empty', async (t: it.TestContext) => {
         const fake = new ExecuteSSHFake();
         const executor = new ExecuteSSH(

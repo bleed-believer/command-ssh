@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { AskPassLastResort } from './ask-pass-last-resort.js';
+import { ShellQuote } from '../shell-quote/index.js';
 
 /**
  * Materializes the helper that `ssh` invokes as `SSH_ASKPASS`.
@@ -27,14 +28,6 @@ export class AskPassScript implements AskPassScriptHandler {
             tmpdir:    inject?.tmpdir?.bind(inject)    ?? tmpdir,
             rm:        inject?.rm?.bind(inject)        ?? rm
         };
-    }
-
-    /**
-     * Wraps a path so it can be embedded into an `sh` script. Single quotes
-     * are closed, escaped and reopened: `'` -> `'\''`.
-     */
-    #quote(value: string): string {
-        return `'${value.replaceAll(`'`, `'\\''`)}'`;
     }
 
     /**
@@ -75,7 +68,7 @@ export class AskPassScript implements AskPassScriptHandler {
         await this.#injected.writeFile(client, this.#clientOf(socket), { mode: 0o600 });
         await this.#injected.writeFile(
             command,
-            `#!/bin/sh\nexec ${this.#quote(process.execPath)} ${this.#quote(client)}\n`,
+            `#!/bin/sh\nexec ${ShellQuote.of(process.execPath)} ${ShellQuote.of(client)}\n`,
             { mode: 0o700 }
         );
 

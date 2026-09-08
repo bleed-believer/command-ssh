@@ -24,8 +24,9 @@ describe('SpawnSSH', () => {
                 '-o', 'StrictHostKeyChecking=accept-new',
                 '-o', 'ConnectTimeout=10',
                 '-n',
+                '--',
                 'yaniko@www.yani-neko.moe',
-                'ls -lua'
+                `'ls' '-lua'`
             ]
         });
     });
@@ -42,7 +43,7 @@ describe('SpawnSSH', () => {
 
         await spawnSSH.spawn('echo', [ 'perreo', 'ijoeputa' ]);
 
-        t.assert.deepStrictEqual(fake.calls[0]?.args.at(-1), 'echo perreo ijoeputa');
+        t.assert.deepStrictEqual(fake.calls[0]?.args.at(-1), `'echo' 'perreo' 'ijoeputa'`);
     });
 
     it('Assemble a remote command with no arguments at all', async (t: it.TestContext) => {
@@ -57,7 +58,91 @@ describe('SpawnSSH', () => {
 
         await spawnSSH.spawn('uptime');
 
-        t.assert.deepStrictEqual(fake.calls[0]?.args.at(-1), 'uptime');
+        t.assert.deepStrictEqual(fake.calls[0]?.args.at(-1), `'uptime'`);
+    });
+
+    it('Neutralize shell syntax smuggled into an argument', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('echo', [ 'hi; id > /tmp/pwned' ]);
+
+        // One argument on the far side, not a second command.
+        t.assert.deepStrictEqual(
+            fake.calls[0]?.args.at(-1),
+            `'echo' 'hi; id > /tmp/pwned'`
+        );
+    });
+
+    it('Hand the remote command over untouched when the shell is opted into', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                shell: true
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('cd /tmp && ls');
+
+        t.assert.deepStrictEqual(fake.calls[0]?.args.at(-1), 'cd /tmp && ls');
+    });
+
+    it('Quote the remote command when the shell is explicitly disabled', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                shell: false
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        t.assert.deepStrictEqual(fake.calls[0]?.args.at(-1), `'ls' '-lua'`);
+    });
+
+    it('Close the options with -- so no destination can become one', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls');
+
+        const args = fake.calls[0]?.args ?? [];
+        t.assert.deepStrictEqual(args.at(-3), '--');
+        t.assert.deepStrictEqual(args.at(-2), 'yaniko@www.yani-neko.moe');
+    });
+
+    it('Refuse to spawn when the username would be read as an ssh option', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: '-oProxyCommand=touch /tmp/pwn'
+            },
+            fake
+        );
+
+        await t.assert.rejects(() => spawnSSH.spawn('ls'), /username/);
+
+        // Nothing was launched: the check happens before any process exists.
+        t.assert.deepStrictEqual(fake.calls, []);
     });
 
     it('Hand back the very same child the spawn created', async (t: it.TestContext) => {
@@ -186,8 +271,9 @@ describe('SpawnSSH', () => {
                 '-o', 'HostKeyAlgorithms=+ssh-rsa',
                 '-o', 'PubkeyAcceptedAlgorithms=+ssh-rsa',
                 '-n',
+                '--',
                 'yaniko@www.yani-neko.moe',
-                'ls -lua'
+                `'ls' '-lua'`
             ]
         });
     });

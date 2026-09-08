@@ -8,16 +8,22 @@ export class ExecuteSSH<O extends ExecuteSSHOptions> {
 
     constructor(options: O, inject?: ExecuteSSHInject) {
         this.#injected = {
-            createSpawnSSH:  inject?.createSpawnSSH?.bind(inject)    ?? (o => new SpawnSSH(o))
-        }
-        
+            createSpawnSSH: inject?.createSpawnSSH?.bind(inject) ?? (o => new SpawnSSH(o))
+        };
+
         this.#options = options;
     }
 
-    #execute(program: string, ...args: string[]): Promise<ExecutionResult> {
-        return new Promise<ExecutionResult>(async (resolve, reject) => {
-            const spawnSSH = this.#injected.createSpawnSSH(this.#options);
-            const child = await spawnSSH.spawn(program, args);
+    /**
+     * The spawn is awaited **outside** the promise: an `async` executor swallows
+     * its own rejection, so a failing spawn would leave this promise pending
+     * forever while the rejection escaped as an unhandled one.
+     */
+    async #execute(program: string, ...args: string[]): Promise<ExecutionResult> {
+        const spawnSSH = this.#injected.createSpawnSSH(this.#options);
+        const child = await spawnSSH.spawn(program, args);
+
+        return new Promise<ExecutionResult>((resolve, reject) => {
             const stdout: Buffer[] = [];
             const stderr: Buffer[] = [];
 

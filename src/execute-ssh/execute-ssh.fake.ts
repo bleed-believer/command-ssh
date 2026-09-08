@@ -12,6 +12,12 @@ type FakeChild = EventEmitter<{
 };
 
 export class ExecuteSSHFake implements ExecuteSSHInject {
+    /**
+     * Makes `spawn` reject instead of handing back a child, which is what a
+     * real one does when the askpass helper cannot be set up.
+     */
+    #spawnError: Error | null;
+
     #options: SpawnSSHOptions[];
     get options(): readonly SpawnSSHOptions[] {
         return this.#options;
@@ -28,9 +34,10 @@ export class ExecuteSSHFake implements ExecuteSSHInject {
     }
 
     constructor() {
-        this.#options  = [];
-        this.#calls    = [];
-        this.#children = [];
+        this.#spawnError = null;
+        this.#options    = [];
+        this.#calls      = [];
+        this.#children   = [];
     }
 
     #childAt(index: number): FakeChild {
@@ -73,11 +80,19 @@ export class ExecuteSSHFake implements ExecuteSSHInject {
         this.#childAt(index).emit('error', error);
     }
 
+    failSpawn(error: Error): void {
+        this.#spawnError = error;
+    }
+
     createSpawnSSH(options: SpawnSSHOptions): SpawnSSHObject {
         this.#options.push(options);
         return {
             spawn: async (program: string, args: string[]) => {
                 this.#calls.push({ program, args });
+                if (this.#spawnError) {
+                    throw this.#spawnError;
+                }
+
                 const child = this.#createChild();
                 this.#children.push(child);
                 return child;

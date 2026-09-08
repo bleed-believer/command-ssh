@@ -1,7 +1,9 @@
 import type { SpawnSSHInject, SpawnSSHOptions } from './interfaces/index.js';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 
+import { SpawnSSHRemoteCommand } from './spawn-ssh.remote-command.js';
 import { TeardownGuard } from './spawn-ssh.teardown-guard.js';
+import { SpawnSSHTarget } from './spawn-ssh.target.js';
 import { AskPass } from '../ask-pass/index.js';
 import { spawn } from 'node:child_process';
 
@@ -23,11 +25,21 @@ export class SpawnSSH {
     /**
      * With a password, `BatchMode` must be turned off, because that is exactly
      * what forbids `ssh` from consulting the `SSH_ASKPASS` helper.
+     *
+     * Every branch closes its options with `--`. Without it a `username` of
+     * `-oProxyCommand=...` becomes the argv element `-oProxyCommand=...@host`,
+     * which `ssh` reads as an option and obeys — running a command *locally*,
+     * before it ever authenticates. The separator turns that back into what it
+     * always was: a destination, and a bad one.
      */
     #argvOf(program: string, args?: string[]): string[] {
-        const { username, hostname, password } = this.#options;
-        const target = `${username}@${hostname}`;
-        const remote = [ program, ...(args ?? []) ].join(' ');
+        const { username, hostname, password, shell } = this.#options;
+        const target = new SpawnSSHTarget(username, hostname).value();
+        const remote = new SpawnSSHRemoteCommand(
+            program,
+            args ?? [],
+            shell ?? false
+        ).value();
 
         if (!password) {
             return [
@@ -35,6 +47,7 @@ export class SpawnSSH {
                 '-o', 'StrictHostKeyChecking=accept-new', // don't hang on an unknown host
                 '-o', 'ConnectTimeout=10',                // don't hang on a dead network
                 '-n',                                     // don't consume the parent's stdin
+                '--',                                     // no option may follow
                 target,
                 remote
             ];
@@ -60,6 +73,7 @@ export class SpawnSSH {
             '-o', 'PreferredAuthentications=password,keyboard-interactive',
             ...legacy,
             '-n',
+            '--',
             target,
             remote
         ];
