@@ -22,17 +22,21 @@ describe('AskPassChannel', () => {
         t.assert.deepStrictEqual(fake.connect().toString('utf-8'), 'not-a-real-password\n');
     });
 
-    it('Serve every prompt while the channel stays open', async (t: it.TestContext) => {
+    it('Serve the secret once and never again', async (t: it.TestContext) => {
         const fake = new AskPassChannelFake();
         const channel = new AskPassChannel(fake);
 
         await channel.open('/tmp/x/s', 'not-a-real-password');
         fake.connect();
         fake.connect();
+        fake.connect();
 
+        // ssh asks once. Anyone asking afterwards is not the helper, and a
+        // channel that answered them would be handing the password to
+        // whatever else on this machine can reach the socket.
         t.assert.deepStrictEqual(
             fake.delivered.map(x => x.toString('utf-8')),
-            [ 'not-a-real-password\n', 'not-a-real-password\n' ]
+            [ 'not-a-real-password\n', '', '' ]
         );
     });
 
@@ -55,22 +59,37 @@ describe('AskPassChannel', () => {
         t.assert.throws(() => fake.connect(), /not listening/);
     });
 
-    it('Wipe the secret buffer handed to the last prompt', async (t: it.TestContext) => {
+    it('Wipe the secret the moment it is delivered', async (t: it.TestContext) => {
         const fake = new AskPassChannelFake();
         const channel = new AskPassChannel(fake);
         const secret = 'not-a-real-password';
 
         await channel.open('/tmp/x/s', secret);
         const delivered = fake.connect();
-        await channel.close();
 
-        // The delivered buffer is the very one the channel keeps: once
-        // closed, the secret is no longer in memory. Its size is the one of
-        // the secret plus the newline ssh expects.
+        // The helper got the real bytes...
+        t.assert.deepStrictEqual(delivered.toString('utf-8'), `${secret}\n`);
+
+        // ...and nothing waited for the teardown: the buffer the channel was
+        // holding is already zeroed, without closing anything.
         t.assert.deepStrictEqual(
-            delivered.toString('utf-8'),
+            fake.handed[0]?.toString('utf-8'),
             '\0'.repeat(secret.length + 1)
         );
+    });
+
+    it('Wipe the secret on close when it was never asked for', async (t: it.TestContext) => {
+        const fake = new AskPassChannelFake();
+        const channel = new AskPassChannel(fake);
+        const secret = 'not-a-real-password';
+
+        // An ssh that died before authenticating never opens the socket, so
+        // the delivery-time wipe never runs and the teardown owes it.
+        await channel.open('/tmp/x/s', secret);
+        await channel.close();
+
+        t.assert.deepStrictEqual(fake.handed, []);
+        t.assert.deepStrictEqual(fake.closed, 1);
     });
 
     it('Ignore a close without a previous open', async (t: it.TestContext) => {

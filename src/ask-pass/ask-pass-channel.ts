@@ -8,8 +8,17 @@ import { createServer } from 'node:net';
  * The secret only ever exists in this process' memory and travels through a
  * UNIX socket living in a `0700` directory. It is never written to disk, and
  * never shows up in anyone's `argv` nor in `/proc/<pid>/environ`.
+ *
+ * It is delivered **once**. `ssh` needs the password while it authenticates,
+ * which is the first instant of a command that may then run for hours, and a
+ * channel that kept answering would keep the secret both reachable on the
+ * socket and alive on the heap for all of it. After the single delivery the
+ * buffer is wiped and later peers get nothing.
  */
 export class AskPassChannel implements AskPassChannelHandler {
+    /** Handed to a peer that arrives once the secret is already gone. */
+    static #EMPTY = Buffer.alloc(0);
+
     #injected: Required<AskPassChannelInject>;
     #server: AskPassChannelServer | null;
     #secret: Buffer | null;
@@ -29,9 +38,20 @@ export class AskPassChannel implements AskPassChannelHandler {
             // A peer dying mid-delivery must not bring the host process
             // down with it.
             socket.on('error', () => {});
-            if (this.#secret) {
-                socket.end(this.#secret);
+
+            const secret = this.#secret;
+            if (!secret) {
+                // Already delivered. `ssh` runs with `NumberOfPasswordPrompts=1`,
+                // so it asks once and never again: whoever is asking now is not
+                // the helper this channel was opened for.
+                socket.end(AskPassChannel.#EMPTY);
+                return;
             }
+
+            // Taken before the write, not after: two peers arriving together
+            // must not both find it here.
+            this.#secret = null;
+            socket.end(secret, () => secret.fill(0));
         });
 
         // The server only listens inside the private directory: a failure
@@ -48,8 +68,9 @@ export class AskPassChannel implements AskPassChannelHandler {
         const server = this.#server;
         this.#server = null;
 
-        // Best-effort wipe: keeps the secret from outliving, on the heap, the
-        // very execution that needed it.
+        // Normally already wiped, the moment it was delivered. This covers the
+        // execution that never got that far: a spawn that failed, an `ssh`
+        // that died before asking.
         this.#secret?.fill(0);
         this.#secret = null;
 

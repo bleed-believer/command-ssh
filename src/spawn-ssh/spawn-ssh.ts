@@ -8,6 +8,8 @@ import { AskPass } from '../ask-pass/index.js';
 import { spawn } from 'node:child_process';
 
 export class SpawnSSH {
+    static #POLICIES: readonly string[] = [ 'accept-new', 'yes', 'no' ];
+
     #injected: Required<SpawnSSHInject>;
     #options: SpawnSSHOptions;
 
@@ -23,6 +25,24 @@ export class SpawnSSH {
     }
 
     /**
+     * The union type is the contract, but a JavaScript consumer has no types:
+     * an unknown value would reach `ssh` as an unknown config value, and how
+     * `ssh` treats the host key from there is not something to leave to a
+     * typo.
+     */
+    #hostKeyChecking(): 'accept-new' | 'yes' | 'no' {
+        const policy = this.#options.hostKeyChecking ?? 'accept-new';
+        if (!SpawnSSH.#POLICIES.includes(policy)) {
+            throw new Error(
+                `Unknown hostKeyChecking ${JSON.stringify(policy)}, expected one of: `
+                + SpawnSSH.#POLICIES.join(', ') + '.'
+            );
+        }
+
+        return policy;
+    }
+
+    /**
      * With a password, `BatchMode` must be turned off, because that is exactly
      * what forbids `ssh` from consulting the `SSH_ASKPASS` helper.
      *
@@ -35,6 +55,7 @@ export class SpawnSSH {
     #argvOf(program: string, args?: string[]): string[] {
         const { username, hostname, password, shell } = this.#options;
         const target = new SpawnSSHTarget(username, hostname).value();
+        const policy = this.#hostKeyChecking();
         const remote = new SpawnSSHRemoteCommand(
             program,
             args ?? [],
@@ -44,7 +65,7 @@ export class SpawnSSH {
         if (!password) {
             return [
                 '-o', 'BatchMode=yes',                    // never ask, just fail
-                '-o', 'StrictHostKeyChecking=accept-new', // don't hang on an unknown host
+                '-o', `StrictHostKeyChecking=${policy}`,
                 '-o', 'ConnectTimeout=10',                // don't hang on a dead network
                 '-n',                                     // don't consume the parent's stdin
                 '--',                                     // no option may follow
@@ -66,7 +87,7 @@ export class SpawnSSH {
 
         return [
             '-o', 'BatchMode=no',                     // enable the askpass helper
-            '-o', 'StrictHostKeyChecking=accept-new',
+            '-o', `StrictHostKeyChecking=${policy}`,
             '-o', 'ConnectTimeout=10',
             '-o', 'NumberOfPasswordPrompts=1',        // don't retry the same password
             '-o', 'PubkeyAuthentication=no',          // go straight to the password
@@ -98,6 +119,25 @@ export class SpawnSSH {
         return env;
     }
 
+    /**
+     * The askpass variables win over the inherited ones — that is the whole
+     * point of them — except `DISPLAY`.
+     *
+     * `DISPLAY` is only a safety net for OpenSSH < 8.4, which consults the
+     * helper solely when it believes it is in a graphical session. Any value
+     * satisfies that belief, so a `DISPLAY` the caller already had does the job
+     * just as well, and overwriting it would change what the child process sees
+     * of the caller's own session for no gain.
+     */
+    #withAskPass(env: NodeJS.ProcessEnv, askPass: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+        const merged = { ...env, ...askPass };
+        if (env.DISPLAY) {
+            merged.DISPLAY = env.DISPLAY;
+        }
+
+        return merged;
+    }
+
     async spawn(program: string, args?: string[]): Promise<ChildProcessWithoutNullStreams> {
         const env = this.#envOf();
         const argv = this.#argvOf(program, args);
@@ -115,13 +155,14 @@ export class SpawnSSH {
 
         let child: ChildProcessWithoutNullStreams;
         try {
+            // Kept inside the `try`: a helper that fails to open still has a
+            // teardown owed to it.
+            const askPassEnv = await askPass.open(password);
+
             child = this.#injected.spawn('ssh', argv, {
                 stdio: 'pipe',
                 cwd: this.#options.cwd,
-                env: {
-                    ...env,
-                    ...await askPass.open(password)
-                }
+                env: this.#withAskPass(env, askPassEnv)
             });
         } catch (error) {
             // Whatever the helper got to set up before things went wrong — a

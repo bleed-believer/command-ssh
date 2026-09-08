@@ -145,6 +145,111 @@ describe('SpawnSSH', () => {
         t.assert.deepStrictEqual(fake.calls, []);
     });
 
+    it('Check the host key with accept-new by default', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            { hostname: 'www.yani-neko.moe', username: 'yaniko' },
+            fake
+        );
+
+        await spawnSSH.spawn('ls');
+
+        t.assert.ok(fake.calls[0]?.args.includes('StrictHostKeyChecking=accept-new'));
+    });
+
+    it('Refuse an unknown host key when asked to be strict', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password',
+                hostKeyChecking: 'yes'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls');
+
+        t.assert.ok(fake.calls[0]?.args.includes('StrictHostKeyChecking=yes'));
+        t.assert.deepStrictEqual(
+            fake.calls[0]?.args.filter(x => x.includes('accept-new')),
+            []
+        );
+    });
+
+    it('Carry the host key policy into the password branch too', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password',
+                hostKeyChecking: 'no'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls');
+
+        t.assert.ok(fake.calls[0]?.args.includes('StrictHostKeyChecking=no'));
+    });
+
+    it('Refuse a host key policy ssh would not understand', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                // What a JavaScript consumer can reach the library with.
+                hostKeyChecking: 'yeah' as unknown as 'yes'
+            },
+            fake
+        );
+
+        await t.assert.rejects(() => spawnSSH.spawn('ls'), /hostKeyChecking/);
+        t.assert.deepStrictEqual(fake.calls, []);
+    });
+
+    it('Keep the DISPLAY the caller already had', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password',
+                env: { PATH: '/usr/bin', DISPLAY: ':1' }
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls');
+
+        // The askpass helper is still forced, but the session the caller
+        // pointed at is theirs.
+        t.assert.deepStrictEqual(fake.envs[0]?.DISPLAY, ':1');
+        t.assert.deepStrictEqual(fake.envs[0]?.SSH_ASKPASS, '/tmp/fake/askpass.sh');
+    });
+
+    it('Fall back to a DISPLAY when the caller had none', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password',
+                env: { PATH: '/usr/bin' }
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls');
+
+        // OpenSSH < 8.4 only consults the helper when it believes there is a
+        // graphical session to ask in.
+        t.assert.deepStrictEqual(fake.envs[0]?.DISPLAY, ':0');
+    });
+
     it('Hand back the very same child the spawn created', async (t: it.TestContext) => {
         const fake = new SpawnSSHFake();
         const spawnSSH = new SpawnSSH(

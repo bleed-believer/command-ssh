@@ -1,5 +1,9 @@
 export interface AskPassChannelSocket {
-    end(data: Buffer): void;
+    /**
+     * The callback runs once the bytes are on the wire, which is the earliest
+     * moment the buffer behind them can be wiped.
+     */
+    end(data: Buffer, callback?: () => void): void;
     on(event: 'error', listener: () => void): void;
 }
 

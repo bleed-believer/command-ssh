@@ -1,13 +1,19 @@
-import type { CommandSSHOptions, EncodedExecutionResult, ExecutionResult } from './interfaces/index.js';
+import type { CommandSSHOptions, CommandSSHInject, EncodedExecutionResult, ExecutionResult } from './interfaces/index.js';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 
 import { ExecuteSSH } from '../execute-ssh/index.js';
 import { SpawnSSH } from '../spawn-ssh/index.js';
 
 export class CommandSSH<O extends CommandSSHOptions> {
+    #injected: Required<CommandSSHInject>;
     #options: O;
 
-    constructor(options: O) {
+    constructor(options: O, inject?: CommandSSHInject) {
+        this.#injected = {
+            createExecuteSSH: inject?.createExecuteSSH?.bind(inject) ?? (o => new ExecuteSSH(o)),
+            createSpawnSSH:   inject?.createSpawnSSH?.bind(inject)   ?? (o => new SpawnSSH(o))
+        };
+
         this.#options = options;
     }
 
@@ -24,7 +30,7 @@ export class CommandSSH<O extends CommandSSHOptions> {
         program: string,
         ...args: string[]
     ): Promise<EncodedExecutionResult | ExecutionResult> {
-        const executeSSH = new ExecuteSSH(this.#options);
+        const executeSSH = this.#injected.createExecuteSSH(this.#options);
         return executeSSH.execute(program, ...args);
     }
 
@@ -32,7 +38,7 @@ export class CommandSSH<O extends CommandSSHOptions> {
         program: string,
         ...args: string[]
     ): Promise<ChildProcessWithoutNullStreams> {
-        const spawnSSH = new SpawnSSH(this.#options);
+        const spawnSSH = this.#injected.createSpawnSSH(this.#options);
         return spawnSSH.spawn(program, args);
     }
 }

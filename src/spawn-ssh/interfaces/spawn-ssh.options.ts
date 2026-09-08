@@ -18,6 +18,22 @@ export interface SpawnSSHOptions {
     legacyAlgorithms?: boolean;
 
     /**
+     * What `ssh` does when the host key is not the one `known_hosts` expects.
+     *
+     * - `accept-new` (default) trusts a host it has never seen, and refuses one
+     *   whose key changed. Convenient, and the reason it is not `yes`: it keeps
+     *   a first connection from failing. It is still trust on first use — a
+     *   man in the middle on that first connection is handed the password.
+     * - `yes` refuses anything not already in `known_hosts`. The right setting
+     *   once the host is known, and the recommended one when a `password` is
+     *   involved.
+     * - `no` accepts anything, every time. There is no authentication of the
+     *   server left: only for hosts that are rebuilt constantly and reachable
+     *   over a network you already trust.
+     */
+    hostKeyChecking?: 'accept-new' | 'yes' | 'no';
+
+    /**
      * Hands the remote command over to the remote shell **unquoted**, so shell
      * syntax works: pipes, redirections, `&&`, globs, variable expansion.
      *
