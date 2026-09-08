@@ -453,8 +453,8 @@ describe('SpawnSSH', () => {
         const codes: (number | null)[] = [];
         child.on('close', code => codes.push(code));
 
-        // The class clears its own listeners while handling this very event,
-        // so the consumer must still be notified.
+        // The teardown rides on the very emit that carries the event, so the
+        // consumer must still be notified, and with the untouched code.
         fake.emitClose(255);
 
         t.assert.deepStrictEqual(codes, [ 255 ]);
@@ -504,6 +504,133 @@ describe('SpawnSSH', () => {
         );
 
         t.assert.deepStrictEqual(fake.calls, []);
+        t.assert.deepStrictEqual(fake.children.length, 0);
+
+        // Half a helper is still a helper: whatever it got to build has to be
+        // torn down, the secret on the heap included.
+        t.assert.deepStrictEqual(fake.askPassClosed, 1);
+    });
+
+    it('Tear down the askpass helper even if the consumer wipes every listener', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        const child = await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        // The credential outlives a careless cleanup: a live socket is exactly
+        // what must never be left behind.
+        child.removeAllListeners();
+        fake.emitClose(0);
+
+        t.assert.deepStrictEqual(fake.askPassClosed, 1);
+    });
+
+    it('Tear down the askpass helper even if the consumer wipes the close listeners', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        const child = await spawnSSH.spawn('ls', [ '-lua' ]);
+        child.removeAllListeners('close');
+        fake.emitClose(0);
+
+        t.assert.deepStrictEqual(fake.askPassClosed, 1);
+    });
+
+    it('Tear down the askpass helper as soon as the child exits', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        // A real child emits `exit` before `close`, and by then `ssh` is gone:
+        // there is nothing left to authenticate.
+        fake.emitExit(0);
+        t.assert.deepStrictEqual(fake.askPassClosed, 1);
+
+        // And the `close` that follows must not tear anything down twice.
+        fake.emitClose(0);
+        t.assert.deepStrictEqual(fake.askPassClosed, 1);
+    });
+
+    it('Tear down the askpass helper when the child never got to live', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        const child = await spawnSSH.spawn('ls', [ '-lua' ]);
+        child.on('error', () => {});
+        fake.emitError(new Error('ENOENT'));
+
+        t.assert.deepStrictEqual(fake.askPassClosed, 1);
+    });
+
+    it('Leave an unhandled error of the child as loud as it was', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        // Keeping the helper alive must never cost the consumer the crash it
+        // would have got with no listener of its own.
+        t.assert.throws(() => fake.emitError(new Error('ENOENT')));
+        t.assert.deepStrictEqual(fake.askPassClosed, 1);
+    });
+
+    it('Tear down the askpass helper when the spawn itself throws', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        // The channel is already listening by then, and no child process will
+        // ever come along to close it.
+        fake.failOnSpawn(new Error('EACCES'));
+        await t.assert.rejects(
+            () => spawnSSH.spawn('ls', [ '-lua' ]),
+            /EACCES/
+        );
+
+        t.assert.deepStrictEqual(fake.askPassOpened, 1);
+        t.assert.deepStrictEqual(fake.askPassClosed, 1);
         t.assert.deepStrictEqual(fake.children.length, 0);
     });
 });

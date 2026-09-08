@@ -95,4 +95,46 @@ describe('AskPassScript', () => {
 
         t.assert.deepStrictEqual(fake.removed.length, 1);
     });
+
+    it('Hand the directory to the emergency cleanup as soon as it exists', async (t: it.TestContext) => {
+        const fake = new AskPassScriptFake();
+        const script = new AskPassScript(fake);
+
+        const paths = await script.create();
+        const directory = paths.socket.replace(/\/s$/, '');
+
+        t.assert.deepStrictEqual(fake.protected, [ directory ]);
+        t.assert.deepStrictEqual(fake.released, []);
+    });
+
+    it('Take the directory back from the emergency cleanup once removed', async (t: it.TestContext) => {
+        const fake = new AskPassScriptFake();
+        const script = new AskPassScript(fake);
+
+        const paths = await script.create();
+        await script.remove();
+
+        const directory = paths.socket.replace(/\/s$/, '');
+        t.assert.deepStrictEqual(fake.protected, [ directory ]);
+        t.assert.deepStrictEqual(fake.released, [ directory ]);
+    });
+
+    it('Remove a helper that never finished being built', async (t: it.TestContext) => {
+        const fake = new AskPassScriptFake();
+        const script = new AskPassScript({
+            lastResort: fake.lastResort,
+            writeFile: async () => { throw new Error('ENOSPC'); },
+            mkdtemp: prefix => fake.mkdtemp(prefix),
+            tmpdir: () => fake.tmpdir(),
+            rm: path => fake.rm(path)
+        });
+
+        // Half a directory is still a directory: whoever comes to clean up
+        // has to be able to find it.
+        await t.assert.rejects(() => script.create(), /ENOSPC/);
+        await script.remove();
+
+        t.assert.deepStrictEqual(fake.removed, [ '/tmp/bb-command-ssh-000000' ]);
+        t.assert.deepStrictEqual(fake.released, [ '/tmp/bb-command-ssh-000000' ]);
+    });
 });

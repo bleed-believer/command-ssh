@@ -1,6 +1,7 @@
 import type { SpawnSSHInject, SpawnSSHOptions } from './interfaces/index.js';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 
+import { TeardownGuard } from './spawn-ssh.teardown-guard.js';
 import { AskPass } from '../ask-pass/index.js';
 import { spawn } from 'node:child_process';
 
@@ -97,20 +98,29 @@ export class SpawnSSH {
         }
 
         const askPass = this.#injected.askPass();
-        const child = this.#injected.spawn('ssh', argv, {
-            stdio: 'pipe',
-            cwd: this.#options.cwd,
-            env: {
-                ...env,
-                ...await askPass.open(password)
-            }
-        });
 
-        child.once('close', async () => {
-            child.removeAllListeners();
-            await askPass.close();
-        });
+        let child: ChildProcessWithoutNullStreams;
+        try {
+            child = this.#injected.spawn('ssh', argv, {
+                stdio: 'pipe',
+                cwd: this.#options.cwd,
+                env: {
+                    ...env,
+                    ...await askPass.open(password)
+                }
+            });
+        } catch (error) {
+            // Whatever the helper got to set up before things went wrong — a
+            // listening socket, a script on disk, the secret still on the heap
+            // — no child process is coming to trigger its teardown. Closing it
+            // must not hide why the launch failed, though.
+            await askPass.close().catch(() => {});
+            throw error;
+        }
 
+        // The teardown is hooked in a way the consumer cannot detach, because
+        // what is left behind is a live socket holding a credential.
+        new TeardownGuard(child, () => askPass.close()).attach();
         return child;
     }
 }

@@ -11,6 +11,7 @@ import { EventEmitter } from 'node:events';
 type FakeChild = EventEmitter<{
     'error': [ error: Error ];
     'close': [ code: number | null ];
+    'exit':  [ code: number | null, signal: NodeJS.Signals | null ];
 }> & {
     stdin:  EventEmitter<{ data: [ chunk: Buffer ] }>;
     stdout: EventEmitter<{ data: [ chunk: Buffer ] }>;
@@ -20,7 +21,8 @@ type FakeChild = EventEmitter<{
 /**
  * Simulates the `ssh` process without touching the network. Unlike a fake of
  * a one-shot execution, nothing is emitted on its own: the test drives the
- * child through `emitStdout`, `emitStderr`, `emitClose` and `emitError`,
+ * child through `emitStdout`, `emitStderr`, `emitClose`, `emitExit` and
+ * `emitError`,
  * because what `SpawnSSH` hands back is a live process, and the consumer only
  * subscribes to it once the promise resolves.
  */
@@ -60,6 +62,7 @@ export class SpawnSSHFake implements SpawnSSHInject {
         return this.#envs;
     }
 
+    #spawnError: Error | null;
     #openError: Error | null;
 
     constructor() {
@@ -70,6 +73,7 @@ export class SpawnSSHFake implements SpawnSSHInject {
         this.#askPassClosed = 0;
         this.#children      = [];
         this.#envs          = [];
+        this.#spawnError    = null;
         this.#openError     = null;
     }
 
@@ -88,6 +92,7 @@ export class SpawnSSHFake implements SpawnSSHInject {
             new EventEmitter<{
                 'error': [ error: Error ];
                 'close': [ code: number | null ];
+                'exit':  [ code: number | null, signal: NodeJS.Signals | null ];
             }>(),
             {
                 stdin:  new EventEmitter<{ data: [ chunk: Buffer ] }>(),
@@ -95,6 +100,11 @@ export class SpawnSSHFake implements SpawnSSHInject {
                 stderr: new EventEmitter<{ data: [ chunk: Buffer ] }>()
             }
         );
+    }
+
+    /** Makes the spawn itself fail, with the helper already listening. */
+    failOnSpawn(error: Error): void {
+        this.#spawnError = error;
     }
 
     /** Makes the credential provider fail before the process is spawned. */
@@ -116,6 +126,11 @@ export class SpawnSSHFake implements SpawnSSHInject {
 
     emitError(error: Error, index = -1): void {
         this.#childAt(index).emit('error', error);
+    }
+
+    /** A real child emits `exit` before `close`, so the tests can too. */
+    emitExit(code: number | null, index = -1): void {
+        this.#childAt(index).emit('exit', code, null);
     }
 
     /**
@@ -145,6 +160,8 @@ export class SpawnSSHFake implements SpawnSSHInject {
         args: string[],
         options: { stdio: 'pipe'; cwd?: string; env?: NodeJS.ProcessEnv }
     ): ChildProcessWithoutNullStreams {
+        if (this.#spawnError) { throw this.#spawnError; }
+
         this.#calls.push({ program, args });
         this.#options.push(options);
         this.#envs.push(options?.env);

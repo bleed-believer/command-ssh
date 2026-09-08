@@ -4,6 +4,8 @@ import { writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { AskPassLastResort } from './ask-pass-last-resort.js';
+
 /**
  * Materializes the helper that `ssh` invokes as `SSH_ASKPASS`.
  *
@@ -19,6 +21,7 @@ export class AskPassScript implements AskPassScriptHandler {
     constructor(inject?: AskPassScriptInject) {
         this.#directory = null;
         this.#injected = {
+            lastResort: inject?.lastResort ?? AskPassLastResort.shared,
             writeFile: inject?.writeFile?.bind(inject) ?? writeFile,
             mkdtemp:   inject?.mkdtemp?.bind(inject)   ?? mkdtemp,
             tmpdir:    inject?.tmpdir?.bind(inject)    ?? tmpdir,
@@ -57,6 +60,12 @@ export class AskPassScript implements AskPassScriptHandler {
             join(this.#injected.tmpdir(), 'bb-command-ssh-')
         );
 
+        // Claimed the moment it exists, and not once it is fully built: a
+        // helper that fails halfway is still a directory somebody has to
+        // remove, and from here on both cleanups know where to look.
+        this.#directory = directory;
+        this.#injected.lastResort.protect(directory);
+
         // The socket name is kept short on purpose: the full path of a UNIX
         // socket cannot go beyond ~108 bytes.
         const socket  = join(directory, 's');
@@ -70,7 +79,6 @@ export class AskPassScript implements AskPassScriptHandler {
             { mode: 0o700 }
         );
 
-        this.#directory = directory;
         return { command, socket };
     }
 
@@ -79,6 +87,10 @@ export class AskPassScript implements AskPassScriptHandler {
 
         const directory = this.#directory;
         this.#directory = null;
+
+        // Released first: whatever happens to the removal below, this
+        // directory is no longer anybody's emergency.
+        this.#injected.lastResort.release(directory);
         await this.#injected.rm(directory, { recursive: true, force: true });
     }
 }
