@@ -1,10 +1,4 @@
-export interface AskPassLastResortInject {
-    /**
-     * Removes a whole directory tree **synchronously**: a process on its way
-     * out never gets to resolve a promise.
-     */
-    rmSync?: (path: string, options: { recursive: true; force: true }) => void;
-
+export interface LastResortInject {
     /** How many handlers are still watching an event once ours is gone. */
     listenerCount?: (event: string) => number;
 

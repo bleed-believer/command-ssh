@@ -58,6 +58,19 @@ export interface SpawnSSHOptions {
      */
     timeout?: number;
 
+    /**
+     * Socket of an already authenticated connection to ride on, instead of
+     * opening one of this invocation's own. It is set by whoever owns that
+     * connection — `CommandSSH` when it is asked to reuse one — and not by the
+     * caller: pointing at a socket somebody else opened is handing them the
+     * command.
+     *
+     * With one in play no credential is used at all, even if a `password` is
+     * configured: the master already authenticated, and the socket is what
+     * stands for it from then on.
+     */
+    controlPath?: string;
+
     cwd?: string;
     env?: NodeJS.ProcessEnv;
 }

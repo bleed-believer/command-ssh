@@ -2,9 +2,10 @@ import type { AskPassScriptHandler, AskPassScriptPaths, AskPassScriptInject } fr
 
 import { writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { AskPassLastResort } from './ask-pass-last-resort.js';
+import { LastResort } from '../last-resort/index.js';
 import { ShellQuote } from '../shell-quote/index.js';
 
 /**
@@ -22,9 +23,10 @@ export class AskPassScript implements AskPassScriptHandler {
     constructor(inject?: AskPassScriptInject) {
         this.#directory = null;
         this.#injected = {
-            lastResort: inject?.lastResort ?? AskPassLastResort.shared,
+            lastResort: inject?.lastResort ?? LastResort.shared,
             writeFile: inject?.writeFile?.bind(inject) ?? writeFile,
             mkdtemp:   inject?.mkdtemp?.bind(inject)   ?? mkdtemp,
+            rmSync:    inject?.rmSync?.bind(inject)    ?? rmSync,
             tmpdir:    inject?.tmpdir?.bind(inject)    ?? tmpdir,
             rm:        inject?.rm?.bind(inject)        ?? rm
         };
@@ -57,7 +59,10 @@ export class AskPassScript implements AskPassScriptHandler {
         // helper that fails halfway is still a directory somebody has to
         // remove, and from here on both cleanups know where to look.
         this.#directory = directory;
-        this.#injected.lastResort.protect(directory);
+        this.#injected.lastResort.protect(
+            directory,
+            () => this.#injected.rmSync(directory, { recursive: true, force: true })
+        );
 
         // The socket name is kept short on purpose: the full path of a UNIX
         // socket cannot go beyond ~108 bytes.

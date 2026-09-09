@@ -1,4 +1,5 @@
-import type { AskPassLastResortHandler, AskPassScriptInject } from './interfaces/index.js';
+import type { AskPassScriptInject } from './interfaces/index.js';
+import type { LastResortHandler } from '../last-resort/index.js';
 
 /**
  * In-memory file system. It records created directories, written files with
@@ -34,10 +35,11 @@ export class AskPassScriptFake implements AskPassScriptInject {
         return this.#released;
     }
 
+    #cleanups: Map<string, () => void>;
     #temporary: string;
     #counter: number;
 
-    lastResort: AskPassLastResortHandler;
+    lastResort: LastResortHandler;
 
     constructor(temporary = '/tmp') {
         this.#temporary = temporary;
@@ -47,11 +49,28 @@ export class AskPassScriptFake implements AskPassScriptInject {
         this.#removed   = [];
         this.#counter   = 0;
         this.#files     = new Map();
+        this.#cleanups  = new Map();
 
         this.lastResort = {
-            protect: directory => { this.#protected.push(directory); },
-            release: directory => { this.#released.push(directory); }
+            protect: (directory, cleanup) => {
+                this.#protected.push(directory);
+                this.#cleanups.set(directory, cleanup);
+            },
+            release: directory => {
+                this.#released.push(directory);
+                this.#cleanups.delete(directory);
+            }
         };
+    }
+
+    /** Fires the emergency cleanup of a directory, as a dying process would. */
+    lastResortOf(directory: string): void {
+        const cleanup = this.#cleanups.get(directory);
+        if (!cleanup) {
+            throw new Error(`The directory ${directory} is not protected.`);
+        }
+
+        cleanup();
     }
 
     async writeFile(path: string, data: string, options: { mode: number }): Promise<void> {
@@ -64,6 +83,10 @@ export class AskPassScriptFake implements AskPassScriptInject {
     }
 
     async rm(path: string): Promise<void> {
+        this.rmSync(path);
+    }
+
+    rmSync(path: string): void {
         this.#removed.push(path);
         for (const key of this.#files.keys()) {
             if (key.startsWith(`${path}/`)) {

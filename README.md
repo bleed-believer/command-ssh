@@ -96,8 +96,65 @@ child.stdin.write('pear\nfig\napple\n');
 child.stdin.end();   // the remote command waits for this EOF
 ```
 
-Every call — `execute` or `spawn` — opens its own connection, with its own
-credential helper. Two concurrent commands never share state.
+By default every call — `execute` or `spawn` — opens its own connection, with
+its own credential helper. Two concurrent commands never share state.
+
+### `connect` — one connection for many commands
+
+Ten commands are ten connections: ten handshakes, ten authentications, and with
+a password, the secret asked for ten times. Against a host that counts repeated
+logins, that is also how an account gets locked out.
+
+`connect` opens **one** connection and lends it to every command that follows,
+using the connection multiplexing of OpenSSH:
+
+```ts
+await using ssh = new CommandSSH({
+    hostname: 'example.com',
+    username: 'deploy',
+    password: 'hunter2',
+    encoding: 'utf-8'
+});
+
+await ssh.connect();                       // one handshake, one authentication
+
+await ssh.execute('systemctl', 'is-active', 'nginx');
+await ssh.execute('df', '-h');
+const child = await ssh.spawn('tail', '-f', '/var/log/syslog');
+
+// `await using` closes it at the end of the scope. Without it, call
+// `await ssh.close()` yourself.
+```
+
+What holds the connection open is a real `ssh -N` process: it runs no remote
+command and exists only to own the socket. That is deliberate — the usual
+alternative, letting the first command promote itself with `ControlPersist`,
+leaves an authenticated connection alive in the background with nobody owning
+it, outliving the process that opened it. Here it has an owner, and `close` is
+what ends it.
+
+The socket lives in a directory created with `0700` permissions, because once
+the master has authenticated, whoever can reach that socket can run commands
+through the connection without proving anything. If the host process is killed,
+`exit` and signal handlers kill the master and wipe the directory: an orphaned
+master is an authenticated session nobody owns any more.
+
+**With a password, the credential is used exactly once.** The master
+authenticates with it, the helper is torn down the moment the connection is up,
+and every command afterwards runs with `BatchMode=yes` and no credential in
+play at all.
+
+If the connection dies — the master killed, the network gone — commands do not
+quietly open one of their own. They fail:
+
+```ts
+await ssh.connect();
+// ...the master dies...
+await ssh.execute('ls');   // throws: the connection is not available
+```
+
+`close` is the exact inverse of `connect`: afterwards commands go back to
+opening a connection each, and the same instance can be connected again.
 
 ## Options
 
@@ -108,6 +165,7 @@ credential helper. Two concurrent commands never share state.
 | `password`         | `string`                            | —              | Enables password authentication. Left out, `ssh` uses your keys and agent. |
 | `encoding`         | `BufferEncoding`                    | —              | Decodes and trims `stdout`/`stderr` for `execute`. |
 | `timeout`          | `number`                            | —              | Milliseconds for the whole thing. See below. |
+| `connectTimeout`   | `number`                            | `20_000`       | Milliseconds `connect` may take to bring the connection up. Unrelated to `timeout`. |
 | `hostKeyChecking`  | `'accept-new' \| 'yes' \| 'no'`     | `'accept-new'` | See below. |
 | `shell`            | `boolean`                           | `false`        | See below. |
 | `legacyAlgorithms` | `boolean`                           | `false`        | Appends `ssh-rsa` to the negotiable algorithms, for servers that offer nothing newer. Password authentication only. |
@@ -195,6 +253,10 @@ This library uses the one door OpenSSH leaves open, `SSH_ASKPASS`:
    cases where the process is killed outright.
 
 The password never reaches the `argv`, the environment, or the disk.
+
+With `connect`, all of the above happens **once for the whole session** instead
+of once per command, and step 5 comes right after step 4 rather than at the end
+of the last command.
 
 Beyond that, the `argv` always closes its options with `--`, so a `username`
 like `-oProxyCommand=...` stays a (bad) destination rather than becoming an

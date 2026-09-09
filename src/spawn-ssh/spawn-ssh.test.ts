@@ -210,6 +210,80 @@ describe('SpawnSSH', () => {
         t.assert.deepStrictEqual(fake.calls, []);
     });
 
+    it('Ride an existing socket instead of opening a connection', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                controlPath: '/tmp/bb-command-ssh-000000/c'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+
+        t.assert.deepStrictEqual(fake.calls[0], {
+            program: 'ssh',
+            args: [
+                '-o', 'ControlPath=/tmp/bb-command-ssh-000000/c',
+                '-o', 'ControlMaster=no',
+                '-o', 'BatchMode=yes',
+                '-o', 'StrictHostKeyChecking=accept-new',
+                '-o', 'ConnectTimeout=10',
+                '--',
+                'yaniko@www.yani-neko.moe',
+                `'ls' '-lua'`
+            ]
+        });
+    });
+
+    it('Ask for no password at all when riding an existing socket', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password',
+                controlPath: '/tmp/bb-command-ssh-000000/c'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls');
+
+        // The master already paid for the authentication. Setting up a helper
+        // here would put the secret back on the heap, and on a socket, once
+        // per command — for nothing.
+        t.assert.deepStrictEqual(fake.askPassOpened, 0);
+        t.assert.deepStrictEqual(fake.passwords, []);
+        t.assert.deepStrictEqual(fake.envs[0]?.SSH_ASKPASS, undefined);
+        t.assert.ok(fake.calls[0]?.args.includes('BatchMode=yes'));
+    });
+
+    it('Keep the deadline over a command that rides an existing socket', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                controlPath: '/tmp/bb-command-ssh-000000/c',
+                timeout: 1000
+            },
+            fake
+        );
+
+        const child = await spawnSSH.spawn('sleep', [ '90' ]);
+        const errors: Error[] = [];
+        child.on('error', error => errors.push(error));
+
+        fake.expireTimeout();
+
+        // Multiplexed or not, a command that never returns never returns.
+        t.assert.deepStrictEqual(fake.killed, [ 'SIGTERM' ]);
+        t.assert.deepStrictEqual(errors[0]?.name, 'TimeoutError');
+    });
+
     it('Keep the DISPLAY the caller already had', async (t: it.TestContext) => {
         const fake = new SpawnSSHFake();
         const spawnSSH = new SpawnSSH(

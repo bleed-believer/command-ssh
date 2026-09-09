@@ -1,28 +1,32 @@
-import type { AskPassLastResortHandler, AskPassLastResortInject } from './interfaces/index.js';
-
-import { rmSync } from 'node:fs';
+import type { LastResortHandler, LastResortInject } from './interfaces/index.js';
 
 /**
- * Wipes the helper directories that the ordinary teardown never got to remove,
- * because the host process died before `ssh` did.
+ * Runs the cleanups that the ordinary teardown never got to run, because the
+ * host process died before `ssh` did.
  *
  * Everything here is synchronous by necessity: once `exit` is being emitted
  * there is no event loop left to resolve a promise, so a queued `rm` would
  * simply never run. That is also why this is a *last* resort and not the
- * mechanism: it removes the directory out from under an `ssh` that may still
- * be authenticating, which is only ever the right call when the process that
- * was supposed to be talking to it is already gone.
+ * mechanism: it pulls a directory out from under an `ssh` that may still be
+ * authenticating, and kills a connection that may still be carrying a command,
+ * which is only ever the right call when the process that was supposed to be
+ * driving them is already gone.
  */
-export class AskPassLastResort implements AskPassLastResortHandler {
+export class LastResort implements LastResortHandler {
     /**
      * One registry for the whole process. Any number of executions can be in
-     * flight, and every one of them adds its directory here instead of its own
+     * flight, and every one of them adds its cleanup here instead of its own
      * pair of listeners, so no consumer ever meets a `MaxListenersExceeded`
      * warning that came from this library.
+     *
+     * Sharing is not only about listener counts. On a signal this class puts
+     * the default disposition back and re-raises it, which ends the process:
+     * a second registry would never get its turn, and whatever it was
+     * protecting would survive the very death it was watching for.
      */
-    static #shared: AskPassLastResort | null = null;
-    static get shared(): AskPassLastResort {
-        return AskPassLastResort.#shared ??= new AskPassLastResort();
+    static #shared: LastResort | null = null;
+    static get shared(): LastResort {
+        return LastResort.#shared ??= new LastResort();
     }
 
     /**
@@ -34,17 +38,16 @@ export class AskPassLastResort implements AskPassLastResortHandler {
      */
     static #signals: readonly NodeJS.Signals[] = [ 'SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT' ];
 
-    #directories: Set<string>;
+    #injected: Required<LastResortInject>;
     #listeners: Map<string, () => void>;
+    #cleanups: Map<string, () => void>;
     #listening: boolean;
-    #injected: Required<AskPassLastResortInject>;
 
-    constructor(inject?: AskPassLastResortInject) {
-        this.#directories = new Set();
-        this.#listening   = false;
-        this.#injected    = {
+    constructor(inject?: LastResortInject) {
+        this.#cleanups  = new Map();
+        this.#listening = false;
+        this.#injected  = {
             listenerCount: inject?.listenerCount?.bind(inject) ?? (event => process.listenerCount(event)),
-            rmSync:        inject?.rmSync?.bind(inject)        ?? rmSync,
             kill:          inject?.kill?.bind(inject)          ?? (signal => { process.kill(process.pid, signal); }),
             off:           inject?.off?.bind(inject)           ?? ((event, listener) => { process.off(event, listener); }),
             on:            inject?.on?.bind(inject)            ?? ((event, listener) => { process.on(event, listener); })
@@ -54,7 +57,7 @@ export class AskPassLastResort implements AskPassLastResortHandler {
         // back at detach time, or the listeners would pile up forever.
         this.#listeners = new Map<string, () => void>([
             [ 'exit', () => this.#purge() ],
-            ...AskPassLastResort.#signals.map(
+            ...LastResort.#signals.map(
                 signal => [ signal, () => this.#onSignal(signal) ] as const
             )
         ]);
@@ -89,8 +92,9 @@ export class AskPassLastResort implements AskPassLastResortHandler {
 
     /**
      * Nothing is watched while nothing is at risk: a consumer that never uses
-     * a password never gets a signal handler of ours, and therefore never sees
-     * this class change how its process reacts to Ctrl+C.
+     * a password nor a reused connection never gets a signal handler of ours,
+     * and therefore never sees this class change how its process reacts to
+     * Ctrl+C.
      */
     #attach(): void {
         if (this.#listening) { return; }
@@ -102,28 +106,33 @@ export class AskPassLastResort implements AskPassLastResortHandler {
     }
 
     /**
-     * One unremovable directory must not cost the others their cleanup, and
+     * One cleanup that throws must not cost the others their turn, and
      * throwing from an `exit` handler would only turn a leaked temporary file
      * into a crash on the way out.
      */
     #purge(): void {
-        for (const directory of this.#directories) {
+        const cleanups = [ ...this.#cleanups.values() ];
+
+        // Emptied before anything runs: a cleanup that ends up here again —
+        // a signal handler of the host that exits, and so fires `exit` too —
+        // must not find the same work waiting for it a second time.
+        this.#cleanups.clear();
+
+        for (const cleanup of cleanups) {
             try {
-                this.#injected.rmSync(directory, { recursive: true, force: true });
+                cleanup();
             } catch { /* nothing left to do about it at this point */ }
         }
-
-        this.#directories.clear();
     }
 
-    protect(directory: string): void {
-        this.#directories.add(directory);
+    protect(directory: string, cleanup: () => void): void {
+        this.#cleanups.set(directory, cleanup);
         this.#attach();
     }
 
     release(directory: string): void {
-        this.#directories.delete(directory);
-        if (this.#directories.size === 0) {
+        this.#cleanups.delete(directory);
+        if (this.#cleanups.size === 0) {
             this.#detach();
         }
     }

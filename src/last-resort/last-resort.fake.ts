@@ -1,18 +1,12 @@
-import type { AskPassLastResortInject } from './interfaces/index.js';
+import type { LastResortInject } from './interfaces/index.js';
 
 /**
- * Double of everything this class does to the outside world: the file system
- * and the host process itself. It records what would have been removed and
- * which listeners are registered at any moment, and lets a test fire the end
- * of the process on demand, so nothing real ever has to die to prove that the
- * cleanup happens.
+ * Double of the only thing this class touches on the outside: the host process
+ * itself. It records which listeners are registered at any moment and lets a
+ * test fire the end of the process on demand, so nothing real ever has to die
+ * to prove that the cleanups run.
  */
-export class AskPassLastResortFake implements AskPassLastResortInject {
-    #removed: string[];
-    get removed(): readonly string[] {
-        return this.#removed;
-    }
-
+export class LastResortFake implements LastResortInject {
     #killed: NodeJS.Signals[];
     get killed(): readonly NodeJS.Signals[] {
         return this.#killed;
@@ -26,14 +20,11 @@ export class AskPassLastResortFake implements AskPassLastResortInject {
     }
 
     #foreign: Map<string, number>;
-    #rmError: Error | null;
 
     constructor() {
         this.#listeners = new Map();
         this.#foreign   = new Map();
-        this.#removed   = [];
         this.#killed    = [];
-        this.#rmError   = null;
     }
 
     #setOf(event: string): Set<() => void> {
@@ -44,11 +35,6 @@ export class AskPassLastResortFake implements AskPassLastResortInject {
         }
 
         return listeners;
-    }
-
-    /** Makes a removal fail, to verify the rest still gets its turn. */
-    failOnRemove(error: Error): void {
-        this.#rmError = error;
     }
 
     /** Pretends the host process registered handlers of its own. */
@@ -69,11 +55,6 @@ export class AskPassLastResortFake implements AskPassLastResortInject {
 
     kill(signal: NodeJS.Signals): void {
         this.#killed.push(signal);
-    }
-
-    rmSync(path: string): void {
-        this.#removed.push(path);
-        if (this.#rmError) { throw this.#rmError; }
     }
 
     off(event: string, listener: () => void): void {

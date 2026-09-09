@@ -119,12 +119,29 @@ describe('AskPassScript', () => {
         t.assert.deepStrictEqual(fake.released, [ directory ]);
     });
 
+    it('Wipe the directory synchronously when the emergency cleanup fires', async (t: it.TestContext) => {
+        const fake = new AskPassScriptFake();
+        const script = new AskPassScript(fake);
+
+        const paths = await script.create();
+        const directory = paths.socket.replace(/\/s$/, '');
+
+        // A process on its way out has no event loop left to resolve a
+        // promise, so what is registered has to remove the directory by
+        // itself rather than delegate to the asynchronous teardown.
+        fake.lastResortOf(directory);
+
+        t.assert.deepStrictEqual(fake.removed, [ directory ]);
+        t.assert.deepStrictEqual(fake.files.size, 0);
+    });
+
     it('Remove a helper that never finished being built', async (t: it.TestContext) => {
         const fake = new AskPassScriptFake();
         const script = new AskPassScript({
             lastResort: fake.lastResort,
             writeFile: async () => { throw new Error('ENOSPC'); },
             mkdtemp: prefix => fake.mkdtemp(prefix),
+            rmSync: path => fake.rmSync(path),
             tmpdir: () => fake.tmpdir(),
             rm: path => fake.rm(path)
         });
