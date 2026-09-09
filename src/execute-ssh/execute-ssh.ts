@@ -1,4 +1,4 @@
-import type { ExecuteSSHOptions, ExecuteSSHInject, ExecutionResult, EncodedExecutionResult } from './interfaces/index.js';
+import type { ExecuteSSHOptions, ExecuteSSHInject, ExecutionResultOf, ExecutionResult, EncodedExecutionResult } from './interfaces/index.js';
 
 import { SpawnSSH } from '../spawn-ssh/index.js';
 
@@ -22,6 +22,13 @@ export class ExecuteSSH<O extends ExecuteSSHOptions> {
     async #execute(program: string, ...args: string[]): Promise<ExecutionResult> {
         const spawnSSH = this.#injected.createSpawnSSH(this.#options);
         const child = await spawnSSH.spawn(program, args);
+
+        // Nothing is ever going to be written here, and a remote command that
+        // reads its stdin — `cat`, `sort`, anything taking a heredoc — would
+        // sit waiting for input that is not coming. Closing it right away is
+        // the EOF it is waiting for. `spawn` is the one that keeps stdin open
+        // for a consumer that does have something to say.
+        child.stdin.end();
 
         return new Promise<ExecutionResult>((resolve, reject) => {
             const stdout: Buffer[] = [];
@@ -48,11 +55,7 @@ export class ExecuteSSH<O extends ExecuteSSHOptions> {
     async execute(
         program: string,
         ...args: string[]
-    ): Promise<
-        O['encoding'] extends BufferEncoding
-        ?   EncodedExecutionResult
-        :   ExecutionResult
-    >;
+    ): Promise<ExecutionResultOf<O>>;
 
     async execute(
         program: string,

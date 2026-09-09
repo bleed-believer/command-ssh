@@ -9,6 +9,7 @@ type FakeChild = EventEmitter<{
 }> & {
     stdout: EventEmitter<{ data: [ chunk: Buffer ] }>;
     stderr: EventEmitter<{ data: [ chunk: Buffer ] }>;
+    stdin:  { end(): void };
 };
 
 export class ExecuteSSHFake implements ExecuteSSHInject {
@@ -33,8 +34,19 @@ export class ExecuteSSHFake implements ExecuteSSHInject {
         return this.#children;
     }
 
+    /**
+     * How many children had their stdin closed. An execution feeds nothing in,
+     * so a remote command that reads its stdin only ever finishes because this
+     * happened.
+     */
+    #stdinClosed: number;
+    get stdinClosed(): number {
+        return this.#stdinClosed;
+    }
+
     constructor() {
         this.#spawnError = null;
+        this.#stdinClosed = 0;
         this.#options    = [];
         this.#calls      = [];
         this.#children   = [];
@@ -57,7 +69,8 @@ export class ExecuteSSHFake implements ExecuteSSHInject {
             }>(),
             {
                 stdout: new EventEmitter<{ data: [ chunk: Buffer ] }>(),
-                stderr: new EventEmitter<{ data: [ chunk: Buffer ] }>()
+                stderr: new EventEmitter<{ data: [ chunk: Buffer ] }>(),
+                stdin:  { end: () => { this.#stdinClosed++; } }
             }
         );
     }

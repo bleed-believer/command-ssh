@@ -171,4 +171,42 @@ describe('ExecuteSSH', () => {
         t.assert.deepStrictEqual(result.stdout, undefined);
         t.assert.deepStrictEqual(result.stderr, undefined);
     });
+
+    it('Close the stdin of the child, since an execution feeds it nothing', async (t: it.TestContext) => {
+        const fake = new ExecuteSSHFake();
+        const executor = new ExecuteSSH(
+            { hostname: 'localhost', username: 'test-user' },
+            fake
+        );
+
+        const execPromise = executor.execute('cat');
+        await new Promise(resolve => setImmediate(resolve));
+
+        // Without this a remote command that reads its stdin waits forever for
+        // input that was never coming, and the execution never returns.
+        t.assert.deepStrictEqual(fake.stdinClosed, 1);
+
+        fake.emitClose(0);
+        await execPromise;
+    });
+
+    it('Reject with the TimeoutError when the deadline is missed', async (t: it.TestContext) => {
+        const fake = new ExecuteSSHFake();
+        const executor = new ExecuteSSH(
+            { hostname: 'localhost', username: 'test-user', timeout: 30000 },
+            fake
+        );
+
+        const execPromise = executor.execute('sleep', '600');
+        await new Promise(resolve => setImmediate(resolve));
+
+        const error = new Error('The command timed out after 30000 ms.');
+        error.name = 'TimeoutError';
+        fake.emitError(error);
+
+        // Killing the process on its own would arrive here as an ordinary
+        // close with a null code, and the caller would never learn that what
+        // it is holding is a command that ran out of time.
+        await t.assert.rejects(execPromise, (err: Error) => err.name === 'TimeoutError');
+    });
 });

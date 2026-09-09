@@ -21,6 +21,15 @@ export class AskPass implements AskPassHandler {
         };
     }
 
+    async close(): Promise<void> {
+        // The helper is always removed, even if closing the channel fails.
+        try {
+            await this.#injected.channel.close();
+        } finally {
+            await this.#injected.script.remove();
+        }
+    }
+
     async open(password: string): Promise<NodeJS.ProcessEnv> {
         const paths = await this.#injected.script.create();
 
@@ -39,14 +48,5 @@ export class AskPass implements AskPassHandler {
             // when it believes it is in a graphical session with no terminal.
             DISPLAY: ':0'
         };
-    }
-
-    async close(): Promise<void> {
-        // The helper is always removed, even if closing the channel fails.
-        try {
-            await this.#injected.channel.close();
-        } finally {
-            await this.#injected.script.remove();
-        }
     }
 }

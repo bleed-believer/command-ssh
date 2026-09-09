@@ -26,8 +26,8 @@ export class TeardownGuard {
      */
     static #events: readonly (string | symbol)[] = [ 'close', 'exit', 'error' ];
 
-    #child: ChildProcessWithoutNullStreams;
     #teardown: () => Promise<void>;
+    #child: ChildProcessWithoutNullStreams;
     #done: boolean;
 
     constructor(child: ChildProcessWithoutNullStreams, teardown: () => Promise<void>) {

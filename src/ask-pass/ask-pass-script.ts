@@ -16,8 +16,8 @@ import { ShellQuote } from '../shell-quote/index.js';
  * can even list the socket.
  */
 export class AskPassScript implements AskPassScriptHandler {
-    #injected: Required<AskPassScriptInject>;
     #directory: string | null;
+    #injected: Required<AskPassScriptInject>;
 
     constructor(inject?: AskPassScriptInject) {
         this.#directory = null;

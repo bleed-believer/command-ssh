@@ -1,6 +1,8 @@
-import type { SpawnSSHInject, SpawnSSHOptions } from './interfaces/index.js';
+import type { SpawnSSHTimeoutGuardHandler, SpawnSSHInject, SpawnSSHOptions } from './interfaces/index.js';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { AskPassHandler } from '../ask-pass/index.js';
 
+import { SpawnSSHTimeoutGuard } from './spawn-ssh.timeout-guard.js';
 import { SpawnSSHRemoteCommand } from './spawn-ssh.remote-command.js';
 import { TeardownGuard } from './spawn-ssh.teardown-guard.js';
 import { SpawnSSHTarget } from './spawn-ssh.target.js';
@@ -19,8 +21,9 @@ export class SpawnSSH {
     ) {
         this.#options = options;
         this.#injected = {
-            askPass:    inject?.askPass?.bind(inject)   ?? (() => new AskPass()),
-            spawn:      inject?.spawn?.bind(inject)     ?? spawn
+            timeoutGuard: inject?.timeoutGuard?.bind(inject) ?? (t => new SpawnSSHTimeoutGuard(t)),
+            askPass:      inject?.askPass?.bind(inject)      ?? (() => new AskPass()),
+            spawn:        inject?.spawn?.bind(inject)        ?? spawn
         };
     }
 
@@ -43,8 +46,36 @@ export class SpawnSSH {
     }
 
     /**
+     * The askpass variables win over the inherited ones — that is the whole
+     * point of them — except `DISPLAY`.
+     *
+     * `DISPLAY` is only a safety net for OpenSSH < 8.4, which consults the
+     * helper solely when it believes it is in a graphical session. Any value
+     * satisfies that belief, so a `DISPLAY` the caller already had does the job
+     * just as well, and overwriting it would change what the child process sees
+     * of the caller's own session for no gain.
+     */
+    #withAskPass(env: NodeJS.ProcessEnv, askPass: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+        const merged = { ...env, ...askPass };
+        if (env.DISPLAY) {
+            merged.DISPLAY = env.DISPLAY;
+        }
+
+        return merged;
+    }
+
+    /**
      * With a password, `BatchMode` must be turned off, because that is exactly
      * what forbids `ssh` from consulting the `SSH_ASKPASS` helper.
+     *
+     * Neither branch passes `-n`. It would point the stdin of `ssh` at
+     * `/dev/null`, and there is nothing left for it to protect: the child is
+     * spawned with `stdio: 'pipe'`, so what it reads is a pipe of its own and
+     * never the stdin of this process, and `SSH_ASKPASS_REQUIRE=force` is what
+     * keeps the password off the terminal. All it did was make the writable
+     * `stdin` of the returned child a lie — a pipe with nobody at the other
+     * end, which swallows the first writes and then blocks forever. Without
+     * it, feeding a remote command through its stdin works.
      *
      * Every branch closes its options with `--`. Without it a `username` of
      * `-oProxyCommand=...` becomes the argv element `-oProxyCommand=...@host`,
@@ -67,7 +98,6 @@ export class SpawnSSH {
                 '-o', 'BatchMode=yes',                    // never ask, just fail
                 '-o', `StrictHostKeyChecking=${policy}`,
                 '-o', 'ConnectTimeout=10',                // don't hang on a dead network
-                '-n',                                     // don't consume the parent's stdin
                 '--',                                     // no option may follow
                 target,
                 remote
@@ -93,7 +123,6 @@ export class SpawnSSH {
             '-o', 'PubkeyAuthentication=no',          // go straight to the password
             '-o', 'PreferredAuthentications=password,keyboard-interactive',
             ...legacy,
-            '-n',
             '--',
             target,
             remote
@@ -120,35 +149,43 @@ export class SpawnSSH {
     }
 
     /**
-     * The askpass variables win over the inherited ones — that is the whole
-     * point of them — except `DISPLAY`.
-     *
-     * `DISPLAY` is only a safety net for OpenSSH < 8.4, which consults the
-     * helper solely when it believes it is in a graphical session. Any value
-     * satisfies that belief, so a `DISPLAY` the caller already had does the job
-     * just as well, and overwriting it would change what the child process sees
-     * of the caller's own session for no gain.
+     * Everything the child owes back when it dies, hooked where the consumer
+     * cannot detach it: a pending timer, and a socket still holding a
+     * credential. `TeardownGuard` stays out of the listener registry precisely
+     * so that a `removeAllListeners()` — the kind of thing anyone writes to
+     * clean up after themselves — does not take the cleanup with it.
      */
-    #withAskPass(env: NodeJS.ProcessEnv, askPass: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-        const merged = { ...env, ...askPass };
-        if (env.DISPLAY) {
-            merged.DISPLAY = env.DISPLAY;
-        }
-
-        return merged;
+    #watch(
+        child: ChildProcessWithoutNullStreams,
+        timeout: SpawnSSHTimeoutGuardHandler,
+        askPass: AskPassHandler | null
+    ): void {
+        timeout.attach(child);
+        new TeardownGuard(child, async () => {
+            timeout.disarm();
+            await askPass?.close();
+        }).attach();
     }
 
     async spawn(program: string, args?: string[]): Promise<ChildProcessWithoutNullStreams> {
         const env = this.#envOf();
         const argv = this.#argvOf(program, args);
 
+        // Built first, and on purpose: this is what refuses a timeout that
+        // makes no sense, and it has to do it while there is still nothing
+        // running to clean up after.
+        const timeout = this.#injected.timeoutGuard(this.#options.timeout);
+
         const { password } = this.#options;
         if (!password) {
-            return this.#injected.spawn('ssh', argv, {
+            const child = this.#injected.spawn('ssh', argv, {
                 stdio: 'pipe',
                 cwd: this.#options.cwd,
                 env
             });
+
+            this.#watch(child, timeout, null);
+            return child;
         }
 
         const askPass = this.#injected.askPass();
@@ -173,9 +210,7 @@ export class SpawnSSH {
             throw error;
         }
 
-        // The teardown is hooked in a way the consumer cannot detach, because
-        // what is left behind is a live socket holding a credential.
-        new TeardownGuard(child, () => askPass.close()).attach();
+        this.#watch(child, timeout, askPass);
         return child;
     }
 }

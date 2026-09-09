@@ -30,11 +30,23 @@ export class AskPassChannelFake implements AskPassChannelInject {
         return this.#closed;
     }
 
+    #handlers: ((error: Error) => void)[];
+
+    /**
+     * How many `error` listeners the server is left with. The channel hooks
+     * one to guard the opening, so anything that grows with each `open` is a
+     * listener nobody is ever going to take off again.
+     */
+    get errorListeners(): number {
+        return this.#handlers.length;
+    }
+
     #error: Error | null;
 
     constructor() {
         this.#delivered = [];
         this.#listening = [];
+        this.#handlers  = [];
         this.#handed    = [];
         this.#listener  = null;
         this.#error     = null;
@@ -44,6 +56,16 @@ export class AskPassChannelFake implements AskPassChannelInject {
     /** Makes `listen` emit `error` instead of succeeding. */
     failWith(error: Error): void {
         this.#error = error;
+    }
+
+    /**
+     * Simulates the server breaking down once it is already listening, which
+     * is the case no promise is waiting for any more.
+     */
+    breakDown(error: Error): void {
+        for (const handler of [ ...this.#handlers ]) {
+            handler(error);
+        }
     }
 
     /** Simulates the askpass helper connecting to ask for the secret. */
@@ -71,13 +93,11 @@ export class AskPassChannelFake implements AskPassChannelInject {
     }
 
     createServer(listener: (socket: AskPassChannelSocket) => void): AskPassChannelServer {
-        let onError: ((error: Error) => void) | null = null;
-
         return {
             listen: (path, ready) => {
                 queueMicrotask(() => {
                     if (this.#error) {
-                        onError?.(this.#error);
+                        this.breakDown(this.#error);
                         return;
                     }
 
@@ -91,8 +111,18 @@ export class AskPassChannelFake implements AskPassChannelInject {
                 this.#closed++;
                 queueMicrotask(ready);
             },
+
+            // A real `EventEmitter` keeps every listener it is given, so a
+            // double that kept only the last one would hide exactly the leak
+            // these tests are here to catch.
             on: (_event, handler) => {
-                onError = handler;
+                this.#handlers.push(handler);
+            },
+            off: (_event, handler) => {
+                const index = this.#handlers.indexOf(handler);
+                if (index >= 0) {
+                    this.#handlers.splice(index, 1);
+                }
             }
         };
     }

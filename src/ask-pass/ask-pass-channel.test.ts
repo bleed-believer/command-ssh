@@ -92,6 +92,33 @@ describe('AskPassChannel', () => {
         t.assert.deepStrictEqual(fake.closed, 1);
     });
 
+    it('Let go of the listener that guarded the opening', async (t: it.TestContext) => {
+        const fake = new AskPassChannelFake();
+        const channel = new AskPassChannel(fake);
+
+        await channel.open('/tmp/x/s', 'not-a-real-password');
+
+        // Exactly one is left, and it is not the one that rejects: keeping
+        // that one would send every later failure to a promise that already
+        // settled, where rejecting does nothing at all.
+        t.assert.deepStrictEqual(fake.errorListeners, 1);
+        t.assert.doesNotThrow(() => fake.breakDown(new Error('EPIPE')));
+    });
+
+    it('Survive a server that breaks down once it is listening', async (t: it.TestContext) => {
+        const fake = new AskPassChannelFake();
+        const channel = new AskPassChannel(fake);
+
+        await channel.open('/tmp/x/s', 'not-a-real-password');
+        fake.breakDown(new Error('EPIPE'));
+
+        // The socket is this class' own business: a failure there must not
+        // take down a host process that did nothing wrong, and the teardown
+        // is owed all the same.
+        await channel.close();
+        t.assert.deepStrictEqual(fake.closed, 1);
+    });
+
     it('Ignore a close without a previous open', async (t: it.TestContext) => {
         const fake = new AskPassChannelFake();
         const channel = new AskPassChannel(fake);

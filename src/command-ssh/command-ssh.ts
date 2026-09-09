@@ -1,4 +1,4 @@
-import type { CommandSSHOptions, CommandSSHInject, EncodedExecutionResult, ExecutionResult } from './interfaces/index.js';
+import type { CommandSSHOptions, CommandSSHInject, ExecutionResultOf, EncodedExecutionResult, ExecutionResult } from './interfaces/index.js';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 
 import { ExecuteSSH } from '../execute-ssh/index.js';
@@ -20,11 +20,7 @@ export class CommandSSH<O extends CommandSSHOptions> {
     async execute(
         program: string,
         ...args: string[]
-    ): Promise<
-        O['encoding'] extends BufferEncoding
-        ?   EncodedExecutionResult
-        :   ExecutionResult
-    >;
+    ): Promise<ExecutionResultOf<O>>;
 
     execute(
         program: string,

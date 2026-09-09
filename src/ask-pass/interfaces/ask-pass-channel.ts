@@ -11,6 +11,7 @@ export interface AskPassChannelServer {
     listen(path: string, listener: () => void): void;
     close(listener: () => void): void;
     on(event: 'error', listener: (error: Error) => void): void;
+    off(event: 'error', listener: (error: Error) => void): void;
 }
 
 /**

@@ -34,10 +34,10 @@ export class AskPassLastResort implements AskPassLastResortHandler {
      */
     static #signals: readonly NodeJS.Signals[] = [ 'SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT' ];
 
-    #injected: Required<AskPassLastResortInject>;
-    #listeners: Map<string, () => void>;
     #directories: Set<string>;
+    #listeners: Map<string, () => void>;
     #listening: boolean;
+    #injected: Required<AskPassLastResortInject>;
 
     constructor(inject?: AskPassLastResortInject) {
         this.#directories = new Set();
@@ -58,21 +58,6 @@ export class AskPassLastResort implements AskPassLastResortHandler {
                 signal => [ signal, () => this.#onSignal(signal) ] as const
             )
         ]);
-    }
-
-    /**
-     * One unremovable directory must not cost the others their cleanup, and
-     * throwing from an `exit` handler would only turn a leaked temporary file
-     * into a crash on the way out.
-     */
-    #purge(): void {
-        for (const directory of this.#directories) {
-            try {
-                this.#injected.rmSync(directory, { recursive: true, force: true });
-            } catch { /* nothing left to do about it at this point */ }
-        }
-
-        this.#directories.clear();
     }
 
     #onSignal(signal: NodeJS.Signals): void {
@@ -114,6 +99,21 @@ export class AskPassLastResort implements AskPassLastResortHandler {
         for (const [ event, listener ] of this.#listeners) {
             this.#injected.on(event, listener);
         }
+    }
+
+    /**
+     * One unremovable directory must not cost the others their cleanup, and
+     * throwing from an `exit` handler would only turn a leaked temporary file
+     * into a crash on the way out.
+     */
+    #purge(): void {
+        for (const directory of this.#directories) {
+            try {
+                this.#injected.rmSync(directory, { recursive: true, force: true });
+            } catch { /* nothing left to do about it at this point */ }
+        }
+
+        this.#directories.clear();
     }
 
     protect(directory: string): void {

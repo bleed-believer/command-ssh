@@ -45,6 +45,19 @@ export interface SpawnSSHOptions {
      */
     shell?: boolean;
 
+    /**
+     * Milliseconds the whole thing is allowed to take: resolving the host, the
+     * handshake, the authentication and the remote command. There is no
+     * default, and without one a command that never returns never returns.
+     *
+     * On expiry the process is killed with `SIGTERM` and an `error` named
+     * `TimeoutError` is raised on it. An execution rejects with it. A spawned
+     * child hands it to whoever listens — and, as with any `error` of a child
+     * process, nobody listening means it is thrown: a consumer that sets a
+     * timeout owes the child an `error` listener.
+     */
+    timeout?: number;
+
     cwd?: string;
     env?: NodeJS.ProcessEnv;
 }

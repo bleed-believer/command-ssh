@@ -31,6 +31,20 @@ export class AskPassChannel implements AskPassChannelHandler {
         };
     }
 
+    async close(): Promise<void> {
+        const server = this.#server;
+        this.#server = null;
+
+        // Normally already wiped, the moment it was delivered. This covers the
+        // execution that never got that far: a spawn that failed, an `ssh`
+        // that died before asking.
+        this.#secret?.fill(0);
+        this.#secret = null;
+
+        if (!server) { return; }
+        await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+
     async open(path: string, secret: string): Promise<void> {
         this.#secret = Buffer.from(`${secret}\n`, 'utf-8');
 
@@ -57,24 +71,26 @@ export class AskPassChannel implements AskPassChannelHandler {
         // The server only listens inside the private directory: a failure
         // here belongs to the host, not to a peer, and must propagate.
         await new Promise<void>((resolve, reject) => {
-            server.on('error', reject);
-            server.listen(path, resolve);
+            const failed = (error: Error): void => reject(error);
+
+            server.on('error', failed);
+            server.listen(path, () => {
+                // This listener only ever guarded the opening. Left behind it
+                // would go on rejecting a promise that already settled, which
+                // is a no-op: every later failure would vanish into it.
+                server.off('error', failed);
+
+                // What replaces it is a decision, not a leftover. Once the
+                // channel is listening there is nobody left to reject to, and
+                // an `error` with no listener at all takes the whole host
+                // process down over a socket that only this class owns. The
+                // failure is not silent either: `ssh` is left without its
+                // password and fails to authenticate, loudly, on its own.
+                server.on('error', () => {});
+                resolve();
+            });
         });
 
         this.#server = server;
-    }
-
-    async close(): Promise<void> {
-        const server = this.#server;
-        this.#server = null;
-
-        // Normally already wiped, the moment it was delivered. This covers the
-        // execution that never got that far: a spawn that failed, an `ssh`
-        // that died before asking.
-        this.#secret?.fill(0);
-        this.#secret = null;
-
-        if (!server) { return; }
-        await new Promise<void>(resolve => server.close(() => resolve()));
     }
 }

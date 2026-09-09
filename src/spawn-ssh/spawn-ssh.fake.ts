@@ -1,7 +1,8 @@
+import type { SpawnSSHTimeoutGuardHandler, SpawnSSHInject } from './interfaces/index.js';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { AskPassHandler } from '../ask-pass/index.js';
-import type { SpawnSSHInject } from './interfaces/index.js';
 
+import { SpawnSSHTimeoutGuard } from './spawn-ssh.timeout-guard.js';
 import { EventEmitter } from 'node:events';
 
 /**
@@ -16,6 +17,7 @@ type FakeChild = EventEmitter<{
     stdin:  EventEmitter<{ data: [ chunk: Buffer ] }>;
     stdout: EventEmitter<{ data: [ chunk: Buffer ] }>;
     stderr: EventEmitter<{ data: [ chunk: Buffer ] }>;
+    kill(signal: NodeJS.Signals): boolean;
 };
 
 /**
@@ -62,6 +64,29 @@ export class SpawnSSHFake implements SpawnSSHInject {
         return this.#envs;
     }
 
+    /** What the deadline was asked for, once per spawned child. */
+    #timeouts: (number | undefined)[];
+    get timeouts(): readonly (number | undefined)[] {
+        return this.#timeouts;
+    }
+
+    #timeoutDisarmed: number;
+    get timeoutDisarmed(): number {
+        return this.#timeoutDisarmed;
+    }
+
+    #timeoutAttached: number;
+    get timeoutAttached(): number {
+        return this.#timeoutAttached;
+    }
+
+    /** The signals every child was killed with, in order. */
+    #killed: NodeJS.Signals[];
+    get killed(): readonly NodeJS.Signals[] {
+        return this.#killed;
+    }
+
+    #expiries: (() => void)[];
     #spawnError: Error | null;
     #openError: Error | null;
 
@@ -75,6 +100,11 @@ export class SpawnSSHFake implements SpawnSSHInject {
         this.#envs          = [];
         this.#spawnError    = null;
         this.#openError     = null;
+        this.#timeouts        = [];
+        this.#timeoutDisarmed = 0;
+        this.#timeoutAttached = 0;
+        this.#expiries        = [];
+        this.#killed          = [];
     }
 
     /** Resolves a child by index, where a negative one counts from the end. */
@@ -97,9 +127,50 @@ export class SpawnSSHFake implements SpawnSSHInject {
             {
                 stdin:  new EventEmitter<{ data: [ chunk: Buffer ] }>(),
                 stdout: new EventEmitter<{ data: [ chunk: Buffer ] }>(),
-                stderr: new EventEmitter<{ data: [ chunk: Buffer ] }>()
+                stderr: new EventEmitter<{ data: [ chunk: Buffer ] }>(),
+                kill: (signal: NodeJS.Signals): boolean => {
+                    this.#killed.push(signal);
+                    return true;
+                }
             }
         );
+    }
+
+    /**
+     * Double of the deadline. The real guard does the work — a timeout that
+     * `SpawnSSH` should have refused is still refused here — and only the
+     * clock is replaced, so the expiry is triggered rather than waited for.
+     */
+    timeoutGuard(timeout?: number): SpawnSSHTimeoutGuardHandler {
+        this.#timeouts.push(timeout);
+
+        const guard = new SpawnSSHTimeoutGuard(timeout, {
+            schedule: (callback: () => void) => {
+                this.#expiries.push(callback);
+                return () => {};
+            }
+        });
+
+        return {
+            attach: child => {
+                this.#timeoutAttached++;
+                guard.attach(child);
+            },
+            disarm: () => {
+                this.#timeoutDisarmed++;
+                guard.disarm();
+            }
+        };
+    }
+
+    /** Fires a scheduled expiry, as the clock would have. */
+    expireTimeout(index = -1): void {
+        const expiry = this.#expiries.at(index);
+        if (!expiry) {
+            throw new Error(`There is nothing scheduled at the index ${index}.`);
+        }
+
+        expiry();
     }
 
     /** Makes the spawn itself fail, with the helper already listening. */

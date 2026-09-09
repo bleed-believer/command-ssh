@@ -1,20 +1,45 @@
 {
   "name": "@bleed-believer/command-ssh",
+  "version": "0.0.0",
+  "description": "Run commands over SSH from Node.js, with password authentication that never puts the secret in the argv, the environment or the disk.",
+  "keywords": [
+    "ssh",
+    "exec",
+    "spawn",
+    "remote",
+    "askpass",
+    "password",
+    "openssh"
+  ],
+  "license": "MIT",
+  "author": "BleedBeliever",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bleed-believer/command-ssh.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bleed-believer/command-ssh/issues"
+  },
+  "homepage": "https://github.com/bleed-believer/command-ssh#readme",
   "type": "module",
-  "files": [ "dist" ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build:cls": "rm -rf ./dist",
     "build:mts": "bleed build --config ./tsconfig.build.json",
     "build:dts": "tsc --project ./tsconfig.build.json",
     "build": "node --run build:cls && node --run build:mts && node --run build:dts",
     "test": "node --import @bleed-believer/cli --test --"
-  },
-  "version": "0.0.0",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
   },
   "publishConfig": {
     "access": "public"

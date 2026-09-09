@@ -23,7 +23,6 @@ describe('SpawnSSH', () => {
                 '-o', 'BatchMode=yes',
                 '-o', 'StrictHostKeyChecking=accept-new',
                 '-o', 'ConnectTimeout=10',
-                '-n',
                 '--',
                 'yaniko@www.yani-neko.moe',
                 `'ls' '-lua'`
@@ -375,7 +374,6 @@ describe('SpawnSSH', () => {
                 '-o', 'PreferredAuthentications=password,keyboard-interactive',
                 '-o', 'HostKeyAlgorithms=+ssh-rsa',
                 '-o', 'PubkeyAcceptedAlgorithms=+ssh-rsa',
-                '-n',
                 '--',
                 'yaniko@www.yani-neko.moe',
                 `'ls' '-lua'`
@@ -822,6 +820,174 @@ describe('SpawnSSH', () => {
 
         t.assert.deepStrictEqual(fake.askPassOpened, 1);
         t.assert.deepStrictEqual(fake.askPassClosed, 1);
+        t.assert.deepStrictEqual(fake.children.length, 0);
+    });
+
+    it('Leave the stdin of ssh on its own pipe, with no password', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('cat', []);
+
+        // `-n` would send it to /dev/null, and the writable `stdin` of the
+        // child handed back would be a pipe nobody reads.
+        t.assert.deepStrictEqual(fake.calls[0]?.args.includes('-n'), false);
+    });
+
+    it('Leave the stdin of ssh on its own pipe with a password too', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('cat', []);
+
+        // Nothing is lost by dropping it here either: the password reaches ssh
+        // through the askpass helper, never through a terminal.
+        t.assert.deepStrictEqual(fake.calls[0]?.args.includes('-n'), false);
+    });
+
+    it('Hand the configured timeout to the deadline', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                timeout: 30000
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('sleep', [ '600' ]);
+
+        t.assert.deepStrictEqual(fake.timeouts, [ 30000 ]);
+        t.assert.deepStrictEqual(fake.timeoutAttached, 1);
+    });
+
+    it('Arm no deadline when none was asked for', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko'
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('sleep', [ '600' ]);
+
+        // The guard is still built — it is what makes the branch unnecessary —
+        // but with nothing to schedule it stays inert.
+        t.assert.deepStrictEqual(fake.timeouts, [ undefined ]);
+        t.assert.deepStrictEqual(fake.killed, []);
+    });
+
+    it('Kill the process and raise a TimeoutError when the deadline is missed', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                timeout: 30000
+            },
+            fake
+        );
+
+        const child = await spawnSSH.spawn('sleep', [ '600' ]);
+        const errors: Error[] = [];
+        child.on('error', error => errors.push(error));
+
+        fake.expireTimeout();
+
+        t.assert.deepStrictEqual(fake.killed, [ 'SIGTERM' ]);
+        t.assert.deepStrictEqual(errors[0]?.name, 'TimeoutError');
+    });
+
+    it('Let go of the deadline once the child is gone', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                timeout: 30000
+            },
+            fake
+        );
+
+        await spawnSSH.spawn('ls', [ '-lua' ]);
+        fake.emitClose(0);
+
+        // A pending timer would keep the host process alive over a command
+        // that already finished.
+        t.assert.deepStrictEqual(fake.timeoutDisarmed, 1);
+    });
+
+    it('Let go of the deadline even if the consumer wipes every listener', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                timeout: 30000
+            },
+            fake
+        );
+
+        const child = await spawnSSH.spawn('ls', [ '-lua' ]);
+        child.removeAllListeners();
+        fake.emitClose(0);
+
+        t.assert.deepStrictEqual(fake.timeoutDisarmed, 1);
+    });
+
+    it('Tear down the askpass helper when the deadline is missed', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                password: 'not-a-real-password',
+                timeout: 30000
+            },
+            fake
+        );
+
+        const child = await spawnSSH.spawn('sleep', [ '600' ]);
+        child.on('error', () => {});
+        fake.expireTimeout();
+
+        // The timeout is one of the ways a child reaches the end of its life,
+        // and the socket holding the credential is owed its teardown all the
+        // same.
+        t.assert.deepStrictEqual(fake.askPassClosed, 1);
+    });
+
+    it('Refuse a timeout that is not a positive number of milliseconds', async (t: it.TestContext) => {
+        const fake = new SpawnSSHFake();
+        const spawnSSH = new SpawnSSH(
+            {
+                hostname: 'www.yani-neko.moe',
+                username: 'yaniko',
+                timeout: -1
+            },
+            fake
+        );
+
+        await t.assert.rejects(() => spawnSSH.spawn('ls', [ '-lua' ]), /Unusable timeout/);
+
+        // Refused before anything was spawned: a deadline that makes no sense
+        // must not leave an `ssh` running behind it.
         t.assert.deepStrictEqual(fake.children.length, 0);
     });
 });
